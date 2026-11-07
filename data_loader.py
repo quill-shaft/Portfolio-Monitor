@@ -1,17 +1,29 @@
 import yfinance as yf
-import pandas as pd
 
-from config import START_DATE, END_DATE, TRADING_DAYS_PER_YEAR
+from config import BENCHMARKS, BENCHMARK_ETFS, EURUSD
 
-def download_close_prices(ticker, start=START_DATE, end=END_DATE):
-    data = yf.download(ticker, start, end, auto_adjust=True, progress=True, threads=False)["Close"]
-    if isinstance(ticker, str) and isinstance(data, pd.DataFrame):
-        data = data.squeeze("columns")
-    data = data.sort_index()
-    data = data.ffill(limit=3).dropna()
-    return data
 
-def download_daily_risk_free_return(ticker, start=START_DATE, end=END_DATE):
-    annual_rate = download_close_prices(ticker, start, end) /100
-    daily_rate = (1 + annual_rate) ** (1 / TRADING_DAYS_PER_YEAR) - 1
-    return daily_rate
+def download_market(tickers, start, end):
+    symbols = list(dict.fromkeys([*tickers, *BENCHMARKS]))
+    data = yf.download([*symbols, EURUSD], start=start, end=end,
+                       auto_adjust=False, progress=False, threads=False)
+    if data is None or data.empty:
+        raise ValueError("Yahoo Finance returned no price data.")
+    # Use closing prices for market value and adjusted closes for returns.
+    close = data["Close"].reindex(columns=symbols).dropna(how="all").sort_index()
+    adjusted = data["Adj Close"].reindex(index=close.index, columns=symbols)
+    missing = close.columns[close.isna().all() | adjusted.isna().all()]
+    if len(missing):
+        raise ValueError("No price history for " + ", ".join(missing))
+    fx = data["Close"].reindex(columns=[EURUSD])[EURUSD].dropna().sort_index()
+    if fx.empty:
+        raise ValueError("EUR/USD exchange rate is unavailable from Yahoo Finance.")
+
+    currencies = {ticker: etf["currency"] for ticker, etf in BENCHMARK_ETFS.items()}
+    for ticker in tickers:
+        if ticker not in currencies:
+            currencies[ticker] = yf.Ticker(ticker).fast_info["currency"]
+        if currencies[ticker] not in ("EUR", "USD"):
+            raise ValueError(f"{ticker} is listed in {currencies[ticker]}. Use a listing in EUR or USD.")
+
+    return close, adjusted, currencies, fx
